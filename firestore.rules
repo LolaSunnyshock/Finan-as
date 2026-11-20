@@ -1,0 +1,140 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSpaceMember(spaceId) {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/spaces/$(spaceId)) &&
+        request.auth.uid in get(/databases/$(database)/documents/spaces/$(spaceId)).data.memberUids;
+    }
+
+    function isValidSpace(data) {
+      return data.name is string && data.name.size() >= 1 && data.name.size() <= 60 &&
+             data.inviteCode is string && data.inviteCode.size() >= 4 && data.inviteCode.size() <= 12 &&
+             data.ownerId is string &&
+             data.memberUids is list && data.memberUids.size() >= 1 && data.memberUids.size() <= 20 &&
+             data.memberNames is list && data.memberNames.size() >= 1 && data.memberNames.size() <= 20 &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidTransaction(data) {
+      return data.spaceId is string &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.userName is string && data.userName.size() <= 80 &&
+             data.description is string && data.description.size() >= 1 && data.description.size() <= 150 &&
+             (data.amount is number || data.amount is int || data.amount is float) && data.amount > 0 && data.amount <= 1000000000 &&
+             data.type in ['INCOME', 'EXPENSE'] &&
+             data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+             data.date is string && data.date.size() >= 8 && data.date.size() <= 20 &&
+             (!('isFixed' in data) || data.isFixed is bool) &&
+             (!('fixedEndMonth' in data) || (data.fixedEndMonth is string && data.fixedEndMonth.size() <= 10)) &&
+             (!('installmentGroupId' in data) || (data.installmentGroupId is string && data.installmentGroupId.size() <= 80)) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    function isValidNote(data) {
+      return data.spaceId is string &&
+             data.userId is string && data.userId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() <= 80 &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+             data.content is string && data.content.size() <= 20000 &&
+             (!('color' in data) || (data.color is string && data.color.size() <= 30)) &&
+             (!('isPinned' in data) || data.isPinned is bool) &&
+             (!('folder' in data) || (data.folder is string && data.folder.size() <= 60)) &&
+             data.createdAt is timestamp &&
+             data.updatedAt is timestamp;
+    }
+
+    // Spaces collection
+    match /spaces/{spaceId} {
+      allow get: if isSignedIn() && isValidId(spaceId) &&
+                    (request.auth.uid in resource.data.memberUids || request.auth.uid == resource.data.ownerId || resource.data.inviteCode is string);
+      allow list: if isSignedIn();
+
+      allow create: if isSignedIn() && isValidId(spaceId) &&
+                       incoming().ownerId == request.auth.uid &&
+                       request.auth.uid in incoming().memberUids &&
+                       incoming().keys().hasAll(['name', 'inviteCode', 'ownerId', 'memberUids', 'memberNames', 'createdAt', 'updatedAt']) &&
+                       isValidSpace(incoming());
+
+      allow update: if isSignedIn() && isValidId(spaceId) &&
+                       (request.auth.uid in existing().memberUids || request.auth.uid in incoming().memberUids) &&
+                       isValidSpace(incoming()) &&
+                       incoming().ownerId == existing().ownerId &&
+                       incoming().createdAt == existing().createdAt;
+
+      allow delete: if isSignedIn() && isValidId(spaceId) && request.auth.uid == existing().ownerId;
+
+      // Transactions subcollection in shared space
+      match /transactions/{transactionId} {
+        allow get, list: if isSpaceMember(spaceId);
+        allow create: if isSpaceMember(spaceId) && isValidId(transactionId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().spaceId == spaceId &&
+                         incoming().keys().hasAll(['spaceId', 'userId', 'userName', 'description', 'amount', 'type', 'category', 'date', 'createdAt', 'updatedAt']) &&
+                         isValidTransaction(incoming());
+        allow update: if isSpaceMember(spaceId) && isValidId(transactionId) &&
+                         isValidTransaction(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['description', 'amount', 'type', 'category', 'date', 'updatedAt', 'userName', 'isFixed', 'fixedEndMonth', 'installmentGroupId']);
+        allow delete: if isSpaceMember(spaceId) && isValidId(transactionId);
+      }
+
+      // Notes subcollection in shared space
+      match /notes/{noteId} {
+        allow get, list: if isSpaceMember(spaceId);
+        allow create: if isSpaceMember(spaceId) && isValidId(noteId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().spaceId == spaceId &&
+                         incoming().keys().hasAll(['spaceId', 'userId', 'authorName', 'title', 'content', 'createdAt', 'updatedAt']) &&
+                         isValidNote(incoming());
+        allow update: if isSpaceMember(spaceId) && isValidId(noteId) &&
+                         isValidNote(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'content', 'color', 'isPinned', 'updatedAt', 'authorName', 'folder']);
+        allow delete: if isSpaceMember(spaceId) && isValidId(noteId);
+      }
+    }
+
+    // User profile for active space preference
+    match /users/{userId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create, update: if isSignedIn() && request.auth.uid == userId && incoming().userId == request.auth.uid;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    // App config and in-app version update management
+    match /app_config/{configId} {
+      allow get: if true;
+      allow list: if isSignedIn();
+      allow create, update: if isSignedIn();
+      allow delete: if false;
+    }
+  }
+}

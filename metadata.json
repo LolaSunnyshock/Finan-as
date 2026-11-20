@@ -1,0 +1,6 @@
+{
+  "name": "Finanças & Notas",
+  "description": "Gestão de finanças pessoais com receitas, despesas, saldo e anotações sincronizadas em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
