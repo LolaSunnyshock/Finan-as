@@ -126,5 +126,17 @@ class ExampleUnitTest {
       "https://github.com/guilherme/financas/raw/main/app-debug.apk",
       UpdateRepository.buildApkDownloadUrl("guilherme/financas", "main", "app-debug.apk")
     )
+    assertEquals(
+      "https://api.github.com/repos/guilherme/financas/git/ref/heads/main",
+      UpdateRepository.buildGitRefApiUrl("guilherme/financas", "main")
+    )
+    assertEquals(
+      "https://api.github.com/repos/guilherme/financas/contents/app-version.json?ref=main",
+      UpdateRepository.buildContentsApiManifestUrl("guilherme/financas", "main")
+    )
+    assertEquals(
+      "aa218f56b14c9653891f9e74264a383fa43fefbd",
+      UpdateRepository.parseGitRefSha("""{"ref":"refs/heads/main","object":{"sha":"aa218f56b14c9653891f9e74264a383fa43fefbd","type":"commit"}}""")
+    )
   }
 }

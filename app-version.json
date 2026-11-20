@@ -1,7 +1,7 @@
 {
-  "latestVersionCode": 9,
-  "latestVersionName": "1.8",
-  "releaseNotes": "v1.8: Modo leitura ao tocar na anotação, botão de editar fora do card e opção de excluir dentro da edição.",
+  "latestVersionCode": 10,
+  "latestVersionName": "1.9",
+  "releaseNotes": "v1.9: Detecção instantânea de atualizações no GitHub sem atraso de cache CDN + melhorias no modo leitura das anotações.",
   "apkPath": "app-debug.apk",
   "forceUpdate": false
 }

@@ -46,6 +46,12 @@ data class ParsedVersionManifest(
     val forceUpdate: Boolean
 )
 
+data class GithubManifestResolution(
+    val manifest: ParsedVersionManifest,
+    val resolvedBranch: String,
+    val commitSha: String? = null
+)
+
 class UpdateRepository(
     private val firestore: FirebaseFirestore,
     private val auth: FirebaseAuth,
@@ -161,16 +167,19 @@ class UpdateRepository(
             }
         }
 
-        // Priority 1: Check GitHub repository app-version.json directly
+        // Priority 1: Check GitHub repository app-version.json directly (resolving live commit SHA to bypass CDN cache)
         if (configuredRepo.isNotBlank()) {
             val githubResult = fetchGithubVersionManifest(configuredRepo, configuredBranch)
             if (githubResult.isSuccess) {
-                val (manifest, resolvedBranch) = githubResult.getOrThrow()
+                val resolution = githubResult.getOrThrow()
+                val manifest = resolution.manifest
+                val resolvedBranch = resolution.resolvedBranch
+                val downloadRef = resolution.commitSha?.takeIf { it.isNotBlank() } ?: resolvedBranch
                 if (resolvedBranch != configuredBranch) {
                     configuredBranch = resolvedBranch
                     saveGithubConfigLocally(configuredRepo, resolvedBranch)
                 }
-                val apkDownloadUrl = buildApkDownloadUrl(configuredRepo, resolvedBranch, manifest.apkPath)
+                val apkDownloadUrl = buildApkDownloadUrl(configuredRepo, downloadRef, manifest.apkPath)
 
                 // Automatically mirror the latest GitHub release metadata into Firestore app_config/version
                 var syncedFsCode = fsCode
@@ -348,7 +357,7 @@ class UpdateRepository(
     private suspend fun fetchGithubVersionManifest(
         repo: String,
         preferredBranch: String
-    ): Result<Pair<ParsedVersionManifest, String>> = withContext(Dispatchers.IO) {
+    ): Result<GithubManifestResolution> = withContext(Dispatchers.IO) {
         val branchesToTry = linkedSetOf(preferredBranch.ifBlank { DEFAULT_BRANCH })
         if (preferredBranch.equals("main", ignoreCase = true)) {
             branchesToTry.add("master")
@@ -356,39 +365,108 @@ class UpdateRepository(
 
         var lastError: Exception? = null
         for (branch in branchesToTry) {
-            val rawUrl = buildRawManifestUrl(repo, branch, System.currentTimeMillis())
-            var conn: HttpURLConnection? = null
-            try {
-                conn = (URL(rawUrl).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 8000
-                    readTimeout = 8000
-                    useCaches = false
-                    setRequestProperty("Cache-Control", "no-cache")
-                    setRequestProperty("Accept", "application/json")
-                }
-                val code = conn.responseCode
-                if (code == HttpURLConnection.HTTP_OK) {
-                    val body = conn.inputStream.bufferedReader().use { it.readText() }
-                    val parsed = parseVersionJson(body)
-                        ?: return@withContext Result.failure(
+            // Step 1: Resolve the real-time HEAD commit SHA via GitHub REST API (zero 5-min Fastly CDN cache)
+            val liveSha = fetchLiveBranchCommitSha(repo, branch)
+            if (!liveSha.isNullOrBlank()) {
+                val shaRawUrl = buildRawManifestUrl(repo, liveSha)
+                val shaFetch = httpGetText(shaRawUrl, acceptHeader = "application/json")
+                if (shaFetch.isSuccess) {
+                    val parsed = parseVersionJson(shaFetch.getOrThrow())
+                    if (parsed != null) {
+                        return@withContext Result.success(
+                            GithubManifestResolution(
+                                manifest = parsed,
+                                resolvedBranch = branch,
+                                commitSha = liveSha
+                            )
+                        )
+                    } else {
+                        return@withContext Result.failure(
                             IllegalStateException("Arquivo app-version.json inválido no repositório $repo.")
                         )
-                    return@withContext Result.success(parsed to branch)
-                } else if (code == HttpURLConnection.HTTP_NOT_FOUND) {
-                    lastError = IllegalStateException(
-                        "Arquivo app-version.json não encontrado em $repo ($branch). Verifique se o repositório é público e se você já clicou em Push to GitHub."
-                    )
-                } else {
-                    lastError = IllegalStateException("GitHub respondeu HTTP $code ao consultar $repo.")
+                    }
                 }
-            } catch (e: Exception) {
-                lastError = IllegalStateException("Erro de conexão ao consultar GitHub: ${e.message}")
-            } finally {
-                conn?.disconnect()
+            }
+
+            // Step 2: Direct GitHub Contents API raw fetch (also avoids raw.githubusercontent.com 5-min cache)
+            val contentsApiUrl = buildContentsApiManifestUrl(repo, branch)
+            val apiFetch = httpGetText(contentsApiUrl, acceptHeader = "application/vnd.github.raw+json")
+            if (apiFetch.isSuccess) {
+                val parsed = parseVersionJson(apiFetch.getOrThrow())
+                if (parsed != null) {
+                    return@withContext Result.success(
+                        GithubManifestResolution(
+                            manifest = parsed,
+                            resolvedBranch = branch,
+                            commitSha = liveSha
+                        )
+                    )
+                }
+            }
+
+            // Step 3: Fallback to standard raw.githubusercontent.com URL (e.g. if API rate limit is reached)
+            val rawUrl = buildRawManifestUrl(repo, branch, System.currentTimeMillis())
+            val rawFetch = httpGetText(rawUrl, acceptHeader = "application/json")
+            if (rawFetch.isSuccess) {
+                val parsed = parseVersionJson(rawFetch.getOrThrow())
+                    ?: return@withContext Result.failure(
+                        IllegalStateException("Arquivo app-version.json inválido no repositório $repo.")
+                    )
+                return@withContext Result.success(
+                    GithubManifestResolution(
+                        manifest = parsed,
+                        resolvedBranch = branch,
+                        commitSha = liveSha
+                    )
+                )
+            } else {
+                lastError = rawFetch.exceptionOrNull() as? Exception
+                    ?: IllegalStateException("Não foi possível consultar $repo ($branch).")
             }
         }
         Result.failure(lastError ?: IllegalStateException("Não foi possível consultar o GitHub."))
+    }
+
+    private fun fetchLiveBranchCommitSha(repo: String, branch: String): String? {
+        val refUrl = buildGitRefApiUrl(repo, branch)
+        val res = httpGetText(refUrl, acceptHeader = "application/vnd.github+json")
+        return res.getOrNull()?.let { parseGitRefSha(it) }
+    }
+
+    private fun httpGetText(urlString: String, acceptHeader: String): Result<String> {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL(urlString).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 8000
+                readTimeout = 8000
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
+                setRequestProperty("Accept", acceptHeader)
+                setRequestProperty("User-Agent", "FinancasNotasApp/${BuildConfig.VERSION_NAME}")
+                if (urlString.startsWith("https://api.github.com/")) {
+                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                }
+            }
+            val code = conn.responseCode
+            if (code == HttpURLConnection.HTTP_OK) {
+                val body = conn.inputStream.bufferedReader().use { it.readText() }
+                Result.success(body)
+            } else if (code == HttpURLConnection.HTTP_NOT_FOUND) {
+                Result.failure(
+                    IllegalStateException(
+                        "Arquivo app-version.json não encontrado no GitHub. Verifique se o repositório é público e se o Push to GitHub foi concluído."
+                    )
+                )
+            } else {
+                Result.failure(IllegalStateException("GitHub respondeu HTTP $code ao consultar atualizações."))
+            }
+        } catch (e: Exception) {
+            Result.failure(IllegalStateException("Erro de conexão ao consultar GitHub: ${e.message}"))
+        } finally {
+            conn?.disconnect()
+        }
     }
 
     suspend fun syncManifestToCloud(
@@ -491,14 +569,34 @@ class UpdateRepository(
             }
         }
 
-        fun buildRawManifestUrl(repo: String, branch: String = DEFAULT_BRANCH, cacheBuster: Long = 0L): String {
-            val base = "https://raw.githubusercontent.com/$repo/$branch/app-version.json"
+        fun buildGitRefApiUrl(repo: String, branch: String = DEFAULT_BRANCH): String {
+            return "https://api.github.com/repos/$repo/git/ref/heads/$branch"
+        }
+
+        fun buildContentsApiManifestUrl(repo: String, branch: String = DEFAULT_BRANCH): String {
+            return "https://api.github.com/repos/$repo/contents/app-version.json?ref=$branch"
+        }
+
+        fun buildRawManifestUrl(repo: String, ref: String = DEFAULT_BRANCH, cacheBuster: Long = 0L): String {
+            val base = "https://raw.githubusercontent.com/$repo/$ref/app-version.json"
             return if (cacheBuster > 0L) "$base?t=$cacheBuster" else base
         }
 
-        fun buildApkDownloadUrl(repo: String, branch: String = DEFAULT_BRANCH, apkPath: String = DEFAULT_APK_PATH): String {
+        fun buildApkDownloadUrl(repo: String, ref: String = DEFAULT_BRANCH, apkPath: String = DEFAULT_APK_PATH): String {
             val cleanPath = apkPath.trim().trimStart('/').ifBlank { DEFAULT_APK_PATH }
-            return "https://github.com/$repo/raw/$branch/$cleanPath"
+            return "https://github.com/$repo/raw/$ref/$cleanPath"
+        }
+
+        fun parseGitRefSha(jsonText: String): String? {
+            val fromJson = try {
+                val obj = JSONObject(jsonText)
+                obj.optJSONObject("object")?.optString("sha", "").orEmpty().trim()
+            } catch (_: Exception) {
+                ""
+            }
+            if (fromJson.matches(Regex("^[0-9a-fA-F]{7,40}$"))) return fromJson
+            val match = Regex(""""sha"\s*:\s*"([0-9a-fA-F]{7,40})"""").find(jsonText)
+            return match?.groupValues?.getOrNull(1)
         }
 
         fun parseVersionJson(jsonText: String): ParsedVersionManifest? {

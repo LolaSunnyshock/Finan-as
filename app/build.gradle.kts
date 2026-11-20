@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.financenotes.kpvzqe"
     minSdk = 24
     targetSdk = 36
-    versionCode = 9
-    versionName = "1.8"
+    versionCode = 10
+    versionName = "1.9"
 
     buildConfigField("String", "SHARED_APP_URL", "\"https://ais-pre-dexpokybeyu6nhsq5ythhq-627435100706.us-west2.run.app\"")
 

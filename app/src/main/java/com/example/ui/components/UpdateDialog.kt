@@ -346,7 +346,7 @@ fun VersionStatusDialog(
                                 Text(
                                     "${status.githubRepo} (${status.githubBranch})",
                                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    color = NavyPrimary
+                                    color = BrandBlue
                                 )
                             }
                         }
