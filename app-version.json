@@ -1,7 +1,7 @@
 {
-  "latestVersionCode": 8,
-  "latestVersionName": "1.7",
-  "releaseNotes": "v1.7: Atualização automática do documento de versão no Firestore ao detectar nova versão no GitHub.",
+  "latestVersionCode": 9,
+  "latestVersionName": "1.8",
+  "releaseNotes": "v1.8: Modo leitura ao tocar na anotação, botão de editar fora do card e opção de excluir dentro da edição.",
   "apkPath": "app-debug.apk",
   "forceUpdate": false
 }

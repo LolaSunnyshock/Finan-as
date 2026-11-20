@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,6 +52,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -104,6 +107,7 @@ fun NotesScreen(
 
     var showAddOrEditDialog by remember { mutableStateOf(false) }
     var selectedNoteForEdit by remember { mutableStateOf<NoteItem?>(null) }
+    var selectedNoteForView by remember { mutableStateOf<NoteItem?>(null) }
     var noteToDelete by remember { mutableStateOf<NoteItem?>(null) }
     var showCreateFolderDialog by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -271,10 +275,12 @@ fun NotesScreen(
                     NoteCardItem(
                         note = note,
                         onNoteClick = {
+                            selectedNoteForView = note
+                        },
+                        onEditClick = {
                             selectedNoteForEdit = note
                             showAddOrEditDialog = true
-                        },
-                        onDeleteClick = { noteToDelete = note }
+                        }
                     )
                 }
             }
@@ -293,7 +299,21 @@ fun NotesScreen(
         )
     }
 
-    // Add / Edit Dialog (With Samsung Notes Style Folder Assignment)
+    // Read-Only Viewer Dialog (triggered when tapping anywhere on the note card)
+    if (selectedNoteForView != null) {
+        val viewingNote = uiState.notes.find { it.id == selectedNoteForView!!.id } ?: selectedNoteForView!!
+        NoteViewerDialog(
+            note = viewingNote,
+            onDismiss = { selectedNoteForView = null },
+            onEditClick = {
+                selectedNoteForView = null
+                selectedNoteForEdit = viewingNote
+                showAddOrEditDialog = true
+            }
+        )
+    }
+
+    // Add / Edit Dialog (With Samsung Notes Style Folder Assignment + Delete inside Edit)
     if (showAddOrEditDialog) {
         NoteEditorDialog(
             existingNote = selectedNoteForEdit,
@@ -305,6 +325,11 @@ fun NotesScreen(
             } ?: "",
             onDismiss = { showAddOrEditDialog = false },
             onCreateNewFolder = { newName -> viewModel.createFolder(newName) },
+            onDeleteClick = selectedNoteForEdit?.let { editing ->
+                {
+                    noteToDelete = editing
+                }
+            },
             onSave = { title, content, color, isPinned, folder ->
                 if (selectedNoteForEdit == null) {
                     viewModel.addNote(title, content, color, isPinned, folder) { success ->
@@ -331,6 +356,13 @@ fun NotesScreen(
                     onClick = {
                         viewModel.deleteNote(note.id)
                         noteToDelete = null
+                        if (selectedNoteForEdit?.id == note.id) {
+                            showAddOrEditDialog = false
+                            selectedNoteForEdit = null
+                        }
+                        if (selectedNoteForView?.id == note.id) {
+                            selectedNoteForView = null
+                        }
                     },
                     modifier = Modifier.testTag("confirm_delete_note_button")
                 ) {
@@ -452,7 +484,7 @@ private fun SamsungNotesFoldersRow(
 private fun NoteCardItem(
     note: NoteItem,
     onNoteClick: () -> Unit,
-    onDeleteClick: () -> Unit
+    onEditClick: () -> Unit
 ) {
     val cardColor = remember(note.color) {
         try {
@@ -505,16 +537,16 @@ private fun NoteCardItem(
                         )
                     }
                     IconButton(
-                        onClick = onDeleteClick,
+                        onClick = onEditClick,
                         modifier = Modifier
-                            .size(32.dp)
-                            .testTag("delete_note_button")
+                            .size(36.dp)
+                            .testTag("edit_note_button")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Excluir anotação",
-                            tint = Color(0xFF64748B),
-                            modifier = Modifier.size(18.dp)
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "Editar anotação",
+                            tint = NavyPrimary,
+                            modifier = Modifier.size(19.dp)
                         )
                     }
                 }
@@ -656,6 +688,7 @@ private fun NoteEditorDialog(
     initialFolder: String,
     onDismiss: () -> Unit,
     onCreateNewFolder: (String) -> Unit,
+    onDeleteClick: (() -> Unit)? = null,
     onSave: (title: String, content: String, color: String, isPinned: Boolean, folder: String) -> Unit
 ) {
     var title by remember { mutableStateOf(existingNote?.title ?: "") }
@@ -858,6 +891,29 @@ private fun NoteEditorDialog(
                         onCheckedChange = { isPinned = it },
                         colors = SwitchDefaults.colors(checkedThumbColor = AmberGold)
                     )
+                }
+
+                // Delete option inside Edit dialog
+                if (existingNote != null && onDeleteClick != null) {
+                    OutlinedButton(
+                        onClick = onDeleteClick,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CoralRed),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("delete_note_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Excluir Anotação",
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         },
